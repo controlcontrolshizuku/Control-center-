@@ -2569,7 +2569,15 @@ jobs:
           __PY__
 
       - name: Build debug APK
-        run: ./gradlew assembleDebug --no-daemon --stacktrace
+        run: |
+          set +e
+          ./gradlew assembleDebug --no-daemon --console=plain > build.log 2>&1
+          code=$?
+          echo "===== KOTLIN / BUILD ERRORS ====="
+          grep -E "^e: |error:|What went wrong|Execution failed|Unresolved|FAILED" build.log | head -40
+          echo "===== LAST 40 LINES ====="
+          tail -40 build.log
+          exit $code
 
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4
