@@ -1781,9 +1781,793 @@ jobs:
           }
           ''', encoding="utf-8")
           __PY__
+                - name: Apply Liquid Glass Panel UI
+        run: |
+          set -e
+          python3 - <<'__PY__'
+          from pathlib import Path
+
+          Path("app/src/main/java/app/cc/Panel.kt").write_text('''package app.cc
+
+          import android.content.Context
+          import android.content.Intent
+          import android.graphics.Color
+          import android.graphics.PixelFormat
+          import android.graphics.Typeface
+          import android.graphics.drawable.GradientDrawable
+          import android.hardware.camera2.CameraManager
+          import android.media.AudioManager
+          import android.net.Uri
+          import android.os.Build
+          import android.provider.Settings
+          import android.view.Gravity
+          import android.view.KeyEvent
+          import android.view.View
+          import android.view.WindowManager
+          import android.widget.Button
+          import android.widget.FrameLayout
+          import android.widget.LinearLayout
+          import android.widget.ScrollView
+          import android.widget.TextView
+          import android.widget.Toast
+
+          class Panel(private val context: Context) {
+              private val prefs = Prefs(context)
+              private val wm = context.getSystemService(Context.WINDOW_SERVICE) as WindowManager
+              private var overlayView: View? = null
+              private var torchOn = false
+              private var dndOn = false
+              private var hotspotOn = false
+
+              fun isShowing(): Boolean = overlayView != null
+
+              fun toggle() {
+                  if (isShowing()) hideNow() else show()
+              }
+
+              fun hideNow() {
+                  val v = overlayView ?: return
+                  overlayView = null
+                  try {
+                      wm.removeView(v)
+                  } catch (_: Throwable) {
+                  }
+              }
+
+              fun show() {
+                  if (isShowing()) return
+                  ShizukuBridge.init(context)
+                  if (!Settings.canDrawOverlays(context)) {
+                      Toast.makeText(context, "فعّل إذن الظهور فوق التطبيقات أولاً", Toast.LENGTH_SHORT).show()
+                      try {
+                          val intent = Intent(
+                              Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
+                              Uri.parse("package:${context.packageName}")
+                          ).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                          context.startActivity(intent)
+                      } catch (_: Throwable) {
+                      }
+                      return
+                  }
+
+                  val light = prefs.lightTheme
+                  val container = buildPanelView(light)
+
+                  val type = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                      WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
+                  } else {
+                      @Suppress("DEPRECATION")
+                      WindowManager.LayoutParams.TYPE_PHONE
+                  }
+
+                  val params = WindowManager.LayoutParams(
+                      WindowManager.LayoutParams.MATCH_PARENT,
+                      WindowManager.LayoutParams.MATCH_PARENT,
+                      type,
+                      WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
+                          WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or
+                          WindowManager.LayoutParams.FLAG_DRAWS_SYSTEM_BAR_BACKGROUNDS,
+                      PixelFormat.TRANSLUCENT
+                  ).apply {
+                      gravity = Gravity.TOP or Gravity.CENTER_HORIZONTAL
+                  }
+
+                  try {
+                      wm.addView(container, params)
+                      overlayView = container
+                  } catch (t: Throwable) {
+                      Toast.makeText(context, "تعذر فتح اللوحة: ${t.message}", Toast.LENGTH_SHORT).show()
+                  }
+              }
+
+              private fun glassPill(
+                  active: Boolean,
+                  light: Boolean,
+                  radiusPx: Float = 999f,
+                  activeFill: Int = Color.WHITE
+              ): GradientDrawable {
+                  return GradientDrawable().apply {
+                      shape = GradientDrawable.RECTANGLE
+                      cornerRadius = radiusPx
+                      if (active) {
+                          setColor(activeFill)
+                          setStroke(2, Color.parseColor("#E6FFFFFF"))
+                      } else {
+                          setColor(if (light) Color.parseColor("#59FFFFFF") else Color.parseColor("#331E293B"))
+                          setStroke(2, if (light) Color.parseColor("#8CFFFFFF") else Color.parseColor("#59FFFFFF"))
+                      }
+                  }
+              }
+
+              private fun circleBadge(active: Boolean): GradientDrawable {
+                  return GradientDrawable().apply {
+                      shape = GradientDrawable.OVAL
+                      setColor(if (active) Color.WHITE else Color.parseColor("#38FFFFFF"))
+                      if (!active) {
+                          setStroke(1, Color.parseColor("#55FFFFFF"))
+                      }
+                  }
+              }
+
+              private fun buildPanelView(light: Boolean): View {
+                  val dp = context.resources.displayMetrics.density
+                  val am = context.getSystemService(Context.AUDIO_SERVICE) as AudioManager
+
+                  val backdrop = FrameLayout(context).apply {
+                      setBackgroundColor(if (light) Color.parseColor("#4DDBEAFE") else Color.parseColor("#6609111E"))
+                      setOnClickListener { hideNow() }
+                  }
+
+                  val scroll = ScrollView(context).apply {
+                      isVerticalScrollBarEnabled = false
+                      layoutParams = FrameLayout.LayoutParams(
+                          FrameLayout.LayoutParams.MATCH_PARENT,
+                          FrameLayout.LayoutParams.MATCH_PARENT
+                      )
+                  }
+
+                  val col = LinearLayout(context).apply {
+                      orientation = LinearLayout.VERTICAL
+                      setPadding((16 * dp).toInt(), (42 * dp).toInt(), (16 * dp).toInt(), (28 * dp).toInt())
+                      setOnClickListener { }
+                  }
+
+                  val topBar = LinearLayout(context).apply {
+                      orientation = LinearLayout.HORIZONTAL
+                      gravity = Gravity.CENTER_VERTICAL
+                  }
+
+                  val btnEdit = Button(context).apply {
+                      text = "✎"
+                      textSize = 16f
+                      setTextColor(Color.WHITE)
+                      background = glassPill(false, light, 999f)
+                      val sz = (40 * dp).toInt()
+                      layoutParams = LinearLayout.LayoutParams(sz, sz)
+                      setPadding(0, 0, 0, 0)
+                      setOnClickListener {
+                          hideNow()
+                          try {
+                              val i = Intent(context, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                              context.startActivity(i)
+                          } catch (_: Throwable) {
+                          }
+                      }
+                  }
+
+                  val spacerTop = View(context).apply {
+                      layoutParams = LinearLayout.LayoutParams(0, 1, 1f)
+                  }
+
+                  val btnGear = Button(context).apply {
+                      text = "⚙"
+                      textSize = 16f
+                      setTextColor(Color.WHITE)
+                      background = glassPill(false, light, 999f)
+                      val sz = (40 * dp).toInt()
+                      layoutParams = LinearLayout.LayoutParams(sz, sz)
+                      setPadding(0, 0, 0, 0)
+                      setOnClickListener {
+                          hideNow()
+                          ShizukuBridge.openSettingsFallback(context, Settings.ACTION_SETTINGS)
+                      }
+                  }
+
+                  topBar.addView(btnEdit)
+                  topBar.addView(spacerTop)
+                  topBar.addView(btnGear)
+                  col.addView(topBar)
+
+                  val row1 = LinearLayout(context).apply {
+                      orientation = LinearLayout.HORIZONTAL
+                      layoutParams = LinearLayout.LayoutParams(
+                          LinearLayout.LayoutParams.MATCH_PARENT,
+                          (74 * dp).toInt()
+                      ).apply { topMargin = (14 * dp).toInt() }
+                  }
+
+                  var wifiOn = true
+                  val wifiCard = LinearLayout(context).apply {
+                      orientation = LinearLayout.HORIZONTAL
+                      gravity = Gravity.CENTER_VERTICAL
+                      setPadding((14 * dp).toInt(), (10 * dp).toInt(), (14 * dp).toInt(), (10 * dp).toInt())
+                      background = glassPill(wifiOn, light, 999f)
+                      layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.MATCH_PARENT, 1f)
+                          .apply { rightMargin = (7 * dp).toInt() }
+                  }
+                  val wifiBadge = FrameLayout(context).apply {
+                      val sz = (42 * dp).toInt()
+                      layoutParams = LinearLayout.LayoutParams(sz, sz)
+                      background = circleBadge(!wifiOn)
+                  }
+                  val wifiIcon = LiquidIconView(context, "wifi", if (wifiOn) Color.parseColor("#2563EB") else Color.WHITE).apply {
+                      layoutParams = FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT)
+                          .apply { setMargins((9 * dp).toInt(), (9 * dp).toInt(), (9 * dp).toInt(), (9 * dp).toInt()) }
+                  }
+                  wifiBadge.addView(wifiIcon)
+                  val wifiTitle = TextView(context).apply {
+                      text = "Wi-Fi"
+                      textSize = 16f
+                      typeface = Typeface.DEFAULT_BOLD
+                      setTextColor(if (wifiOn) Color.parseColor("#0F172A") else Color.WHITE)
+                      layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT)
+                          .apply { leftMargin = (12 * dp).toInt() }
+                  }
+                  wifiCard.addView(wifiBadge)
+                  wifiCard.addView(wifiTitle)
+                  wifiCard.setOnClickListener {
+                      wifiOn = !wifiOn
+                      if (prefs.useShizuku) ShizukuBridge.setWifiEnabled(wifiOn)
+                      else ShizukuBridge.openSettingsFallback(context, Settings.ACTION_WIFI_SETTINGS)
+                      wifiCard.background = glassPill(wifiOn, light, 999f)
+                      wifiBadge.background = circleBadge(!wifiOn)
+                      wifiIcon.setTint(if (wifiOn) Color.parseColor("#2563EB") else Color.WHITE)
+                      wifiTitle.setTextColor(if (wifiOn) Color.parseColor("#0F172A") else Color.WHITE)
+                  }
+
+                  var dataOn = false
+                  val dataCard = LinearLayout(context).apply {
+                      orientation = LinearLayout.HORIZONTAL
+                      gravity = Gravity.CENTER_VERTICAL
+                      setPadding((14 * dp).toInt(), (10 * dp).toInt(), (14 * dp).toInt(), (10 * dp).toInt())
+                      background = glassPill(dataOn, light, 999f)
+                      layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.MATCH_PARENT, 1f)
+                          .apply { leftMargin = (7 * dp).toInt() }
+                  }
+                  val dataIcon = LiquidIconView(context, "data", Color.WHITE).apply {
+                      val sz = (28 * dp).toInt()
+                      layoutParams = LinearLayout.LayoutParams(sz, sz)
+                  }
+                  val dataTitle = TextView(context).apply {
+                      text = "Mobile\ndata"
+                      textSize = 15f
+                      setTextColor(Color.WHITE)
+                      layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT)
+                          .apply { leftMargin = (12 * dp).toInt() }
+                  }
+                  dataCard.addView(dataIcon)
+                  dataCard.addView(dataTitle)
+                  dataCard.setOnClickListener {
+                      dataOn = !dataOn
+                      if (prefs.useShizuku) ShizukuBridge.setMobileDataEnabled(dataOn)
+                      else ShizukuBridge.openSettingsFallback(context, Settings.ACTION_DATA_ROAMING_SETTINGS)
+                      dataCard.background = glassPill(dataOn, light, 999f)
+                      dataIcon.setTint(if (dataOn) Color.parseColor("#0F172A") else Color.WHITE)
+                      dataTitle.setTextColor(if (dataOn) Color.parseColor("#0F172A") else Color.WHITE)
+                  }
+
+                  row1.addView(wifiCard)
+                  row1.addView(dataCard)
+                  col.addView(row1)
+
+                  val row2 = LinearLayout(context).apply {
+                      orientation = LinearLayout.HORIZONTAL
+                      layoutParams = LinearLayout.LayoutParams(
+                          LinearLayout.LayoutParams.MATCH_PARENT,
+                          (176 * dp).toInt()
+                      ).apply { topMargin = (14 * dp).toInt() }
+                  }
+
+                  val mediaBox = LinearLayout(context).apply {
+                      orientation = LinearLayout.VERTICAL
+                      setPadding((16 * dp).toInt(), (14 * dp).toInt(), (16 * dp).toInt(), (14 * dp).toInt())
+                      background = glassPill(false, light, 64f)
+                      layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.MATCH_PARENT, 1.05f)
+                          .apply { rightMargin = (7 * dp).toInt() }
+                  }
+
+                  val mediaTop = LinearLayout(context).apply {
+                      orientation = LinearLayout.HORIZONTAL
+                      gravity = Gravity.CENTER_VERTICAL
+                  }
+                  val noteIcon = LiquidIconView(context, "media", Color.WHITE).apply {
+                      val sz = (24 * dp).toInt()
+                      layoutParams = LinearLayout.LayoutParams(sz, sz)
+                  }
+                  val mediaSpacer = View(context).apply {
+                      layoutParams = LinearLayout.LayoutParams(0, 1, 1f)
+                  }
+                  val castIcon = LiquidIconView(context, "device_controls", Color.WHITE).apply {
+                      val sz = (24 * dp).toInt()
+                      layoutParams = LinearLayout.LayoutParams(sz, sz)
+                      setOnClickListener {
+                          ShizukuBridge.openSettingsFallback(context, Settings.ACTION_CAST_SETTINGS)
+                      }
+                  }
+                  mediaTop.addView(noteIcon)
+                  mediaTop.addView(mediaSpacer)
+                  mediaTop.addView(castIcon)
+
+                  val notPlaying = TextView(context).apply {
+                      text = "Not playing"
+                      textSize = 15f
+                      setTextColor(Color.parseColor("#E2E8F0"))
+                      layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, 0, 1f)
+                          .apply { topMargin = (18 * dp).toInt() }
+                  }
+
+                  val transportRow = LinearLayout(context).apply {
+                      orientation = LinearLayout.HORIZONTAL
+                      gravity = Gravity.CENTER
+                  }
+                  fun mediaBtn(label: String, keyCode: Int) = Button(context).apply {
+                      text = label
+                      textSize = 15f
+                      setTextColor(Color.WHITE)
+                      background = null
+                      layoutParams = LinearLayout.LayoutParams(0, (40 * dp).toInt(), 1f)
+                      setPadding(0, 0, 0, 0)
+                      setOnClickListener {
+                          try {
+                              am.dispatchMediaKeyEvent(KeyEvent(KeyEvent.ACTION_DOWN, keyCode))
+                              am.dispatchMediaKeyEvent(KeyEvent(KeyEvent.ACTION_UP, keyCode))
+                          } catch (_: Throwable) {
+                          }
+                      }
+                  }
+                  transportRow.addView(mediaBtn("⏮", KeyEvent.KEYCODE_MEDIA_PREVIOUS))
+                  transportRow.addView(mediaBtn("▶", KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE))
+                  transportRow.addView(mediaBtn("⏭", KeyEvent.KEYCODE_MEDIA_NEXT))
+
+                  mediaBox.addView(mediaTop)
+                  mediaBox.addView(notPlaying)
+                  mediaBox.addView(transportRow)
+
+                  val brightSlider = VerticalGlassSlider(context, "brightness", light) { v, _ ->
+                      val target = (v * 255f).toInt().coerceIn(5, 255)
+                      if (prefs.useShizuku) ShizukuBridge.runShellCommand("settings put system screen_brightness $target")
+                      try {
+                          Settings.System.putInt(context.contentResolver, Settings.System.SCREEN_BRIGHTNESS, target)
+                      } catch (_: Throwable) {
+                      }
+                  }.apply {
+                      layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.MATCH_PARENT, 0.52f)
+                          .apply { leftMargin = (7 * dp).toInt(); rightMargin = (7 * dp).toInt() }
+                  }
+                  val curBright = try {
+                      Settings.System.getInt(context.contentResolver, Settings.System.SCREEN_BRIGHTNESS) / 255f
+                  } catch (_: Throwable) {
+                      0.55f
+                  }
+                  brightSlider.setLevel(curBright.coerceIn(0.1f, 1f))
+
+                  val volSlider = VerticalGlassSlider(context, "volume", light) { v, _ ->
+                      val max = am.getStreamMaxVolume(AudioManager.STREAM_MUSIC).coerceAtLeast(1)
+                      val target = (v * max).toInt().coerceIn(0, max)
+                      if (prefs.useShizuku) {
+                          ShizukuBridge.runShellCommand("cmd media_session volume --stream 3 --set $target")
+                      }
+                      try {
+                          am.setStreamVolume(AudioManager.STREAM_MUSIC, target, 0)
+                      } catch (_: Throwable) {
+                      }
+                  }.apply {
+                      layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.MATCH_PARENT, 0.52f)
+                  }
+                  val maxVol = am.getStreamMaxVolume(AudioManager.STREAM_MUSIC).coerceAtLeast(1)
+                  volSlider.setLevel((am.getStreamVolume(AudioManager.STREAM_MUSIC).toFloat() / maxVol).coerceIn(0.1f, 1f))
+
+                  row2.addView(mediaBox)
+                  row2.addView(brightSlider)
+                  row2.addView(volSlider)
+                  col.addView(row2)
+
+                  val row3 = LinearLayout(context).apply {
+                      orientation = LinearLayout.HORIZONTAL
+                      layoutParams = LinearLayout.LayoutParams(
+                          LinearLayout.LayoutParams.MATCH_PARENT,
+                          (74 * dp).toInt()
+                      ).apply { topMargin = (14 * dp).toInt() }
+                  }
+
+                  val ringerBar = LinearLayout(context).apply {
+                      orientation = LinearLayout.HORIZONTAL
+                      gravity = Gravity.CENTER_VERTICAL
+                      setPadding((8 * dp).toInt(), (8 * dp).toInt(), (8 * dp).toInt(), (8 * dp).toInt())
+                      background = glassPill(false, light, 999f)
+                      layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.MATCH_PARENT, 1.05f)
+                          .apply { rightMargin = (7 * dp).toInt() }
+                  }
+
+                  var ringerMode = am.ringerMode
+                  fun ringerSlot(modeVal: Int, kind: String, activeColor: Int) = FrameLayout(context).apply {
+                      val isSel = ringerMode == modeVal
+                      layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.MATCH_PARENT, 1f)
+                      background = if (isSel) circleBadge(true) else null
+                      val ic = LiquidIconView(context, kind, if (isSel) activeColor else Color.WHITE).apply {
+                          val sz = (24 * dp).toInt()
+                          layoutParams = FrameLayout.LayoutParams(sz, sz, Gravity.CENTER)
+                      }
+                      addView(ic)
+                      setOnClickListener {
+                          ringerMode = modeVal
+                          if (prefs.useShizuku) ShizukuBridge.setRingerMode(context, modeVal)
+                          else {
+                              try { am.ringerMode = modeVal } catch (_: Throwable) {}
+                          }
+                          hideNow()
+                          show()
+                      }
+                  }
+
+                  ringerBar.addView(ringerSlot(AudioManager.RINGER_MODE_NORMAL, "sound", Color.parseColor("#EF4444")))
+                  ringerBar.addView(ringerSlot(AudioManager.RINGER_MODE_VIBRATE, "vibrate", Color.parseColor("#3B82F6")))
+                  ringerBar.addView(ringerSlot(AudioManager.RINGER_MODE_SILENT, "silent", Color.parseColor("#94A3B8")))
+
+                  val dndCircle = FrameLayout(context).apply {
+                      val sz = (74 * dp).toInt()
+                      layoutParams = LinearLayout.LayoutParams(sz, sz).apply { leftMargin = (7 * dp).toInt(); rightMargin = (7 * dp).toInt() }
+                      background = circleBadge(!dndOn)
+                      val ic = LiquidIconView(context, "dnd", Color.parseColor("#2563EB")).apply {
+                          val isz = (30 * dp).toInt()
+                          layoutParams = FrameLayout.LayoutParams(isz, isz, Gravity.CENTER)
+                      }
+                      addView(ic)
+                      setOnClickListener {
+                          dndOn = !dndOn
+                          if (prefs.useShizuku) ShizukuBridge.setZenMode(if (dndOn) 2 else 0)
+                          else ShizukuBridge.openSettingsFallback(context, Settings.ACTION_ZEN_MODE_PRIORITY_SETTINGS)
+                          background = circleBadge(!dndOn)
+                      }
+                  }
+
+                  val soundCircle = FrameLayout(context).apply {
+                      val sz = (74 * dp).toInt()
+                      layoutParams = LinearLayout.LayoutParams(sz, sz)
+                      background = circleBadge(true)
+                      val ic = LiquidIconView(context, "sound", Color.parseColor("#DC2626")).apply {
+                          val isz = (30 * dp).toInt()
+                          layoutParams = FrameLayout.LayoutParams(isz, isz, Gravity.CENTER)
+                      }
+                      addView(ic)
+                      setOnClickListener {
+                          ShizukuBridge.openSettingsFallback(context, Settings.ACTION_SOUND_SETTINGS)
+                      }
+                  }
+
+                  row3.addView(ringerBar)
+                  row3.addView(dndCircle)
+                  row3.addView(soundCircle)
+                  col.addView(row3)
+
+                  val row4 = LinearLayout(context).apply {
+                      orientation = LinearLayout.HORIZONTAL
+                      layoutParams = LinearLayout.LayoutParams(
+                          LinearLayout.LayoutParams.MATCH_PARENT,
+                          (74 * dp).toInt()
+                      ).apply { topMargin = (14 * dp).toInt() }
+                  }
+
+                  var btOn = false
+                  val btCard = LinearLayout(context).apply {
+                      orientation = LinearLayout.HORIZONTAL
+                      gravity = Gravity.CENTER_VERTICAL
+                      setPadding((14 * dp).toInt(), (10 * dp).toInt(), (14 * dp).toInt(), (10 * dp).toInt())
+                      background = glassPill(btOn, light, 999f)
+                      layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.MATCH_PARENT, 1f)
+                          .apply { rightMargin = (7 * dp).toInt() }
+                  }
+                  val btIcon = LiquidIconView(context, "bluetooth", Color.parseColor("#60A5FA")).apply {
+                      val sz = (26 * dp).toInt()
+                      layoutParams = LinearLayout.LayoutParams(sz, sz)
+                  }
+                  val btLabel = TextView(context).apply {
+                      text = "Bluetooth"
+                      textSize = 15.5f
+                      setTextColor(Color.WHITE)
+                      layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT)
+                          .apply { leftMargin = (12 * dp).toInt() }
+                  }
+                  btCard.addView(btIcon)
+                  btCard.addView(btLabel)
+                  btCard.setOnClickListener {
+                      btOn = !btOn
+                      if (prefs.useShizuku) ShizukuBridge.setBluetoothEnabled(btOn)
+                      else ShizukuBridge.openSettingsFallback(context, Settings.ACTION_BLUETOOTH_SETTINGS)
+                      btCard.background = glassPill(btOn, light, 999f)
+                      btIcon.setTint(if (btOn) Color.parseColor("#2563EB") else Color.parseColor("#60A5FA"))
+                      btLabel.setTextColor(if (btOn) Color.parseColor("#0F172A") else Color.WHITE)
+                  }
+
+                  val torchCard = LinearLayout(context).apply {
+                      orientation = LinearLayout.HORIZONTAL
+                      gravity = Gravity.CENTER_VERTICAL
+                      setPadding((14 * dp).toInt(), (10 * dp).toInt(), (14 * dp).toInt(), (10 * dp).toInt())
+                      background = glassPill(torchOn, light, 999f)
+                      layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.MATCH_PARENT, 1f)
+                          .apply { leftMargin = (7 * dp).toInt() }
+                  }
+                  val torchIcon = LiquidIconView(context, "torch", Color.WHITE).apply {
+                      val sz = (26 * dp).toInt()
+                      layoutParams = LinearLayout.LayoutParams(sz, sz)
+                  }
+                  val torchLabel = TextView(context).apply {
+                      text = "Torch"
+                      textSize = 15.5f
+                      setTextColor(Color.WHITE)
+                      layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT)
+                          .apply { leftMargin = (12 * dp).toInt() }
+                  }
+                  torchCard.addView(torchIcon)
+                  torchCard.addView(torchLabel)
+                  torchCard.setOnClickListener {
+                      val next = !torchOn
+                      try {
+                          val cm = context.getSystemService(Context.CAMERA_SERVICE) as CameraManager
+                          val camId = cm.cameraIdList.firstOrNull { id ->
+                              val c = cm.getCameraCharacteristics(id)
+                              val flash = c.get(android.hardware.camera2.CameraCharacteristics.FLASH_INFO_AVAILABLE) ?: false
+                              val facing = c.get(android.hardware.camera2.CameraCharacteristics.LENS_FACING)
+                              flash && facing == android.hardware.camera2.CameraCharacteristics.LENS_FACING_BACK
+                          } ?: cm.cameraIdList.firstOrNull()
+                          if (camId != null) {
+                              cm.setTorchMode(camId, next)
+                              torchOn = next
+                          }
+                      } catch (_: Throwable) {
+                      }
+                      torchCard.background = glassPill(torchOn, light, 999f)
+                      torchIcon.setTint(if (torchOn) Color.parseColor("#0F172A") else Color.WHITE)
+                      torchLabel.setTextColor(if (torchOn) Color.parseColor("#0F172A") else Color.WHITE)
+                  }
+
+                  row4.addView(btCard)
+                  row4.addView(torchCard)
+                  col.addView(row4)
+
+                  var rotOn = true
+                  fun circleTile(kind: String, isActive: Boolean, iconTint: Int, onTap: () -> Unit): FrameLayout {
+                      val sz = (74 * dp).toInt()
+                      return FrameLayout(context).apply {
+                          layoutParams = LinearLayout.LayoutParams(0, sz, 1f).apply {
+                              setMargins((5 * dp).toInt(), 0, (5 * dp).toInt(), 0)
+                          }
+                          background = circleBadge(isActive)
+                          val ic = LiquidIconView(context, kind, iconTint).apply {
+                              val isz = (28 * dp).toInt()
+                              layoutParams = FrameLayout.LayoutParams(isz, isz, Gravity.CENTER)
+                          }
+                          addView(ic)
+                          setOnClickListener { onTap() }
+                      }
+                  }
+
+                  val row5 = LinearLayout(context).apply {
+                      orientation = LinearLayout.HORIZONTAL
+                      layoutParams = LinearLayout.LayoutParams(
+                          LinearLayout.LayoutParams.MATCH_PARENT,
+                          LinearLayout.LayoutParams.WRAP_CONTENT
+                      ).apply { topMargin = (14 * dp).toInt() }
+                  }
+                  row5.addView(circleTile("airplane", false, Color.WHITE) {
+                      if (prefs.useShizuku) ShizukuBridge.setAirplaneMode(true)
+                      else ShizukuBridge.openSettingsFallback(context, Settings.ACTION_AIRPLANE_MODE_SETTINGS)
+                  })
+                  row5.addView(circleTile("rotation", rotOn, Color.parseColor("#2563EB")) {
+                      rotOn = !rotOn
+                      if (prefs.useShizuku) ShizukuBridge.setAutoRotate(rotOn)
+                      else ShizukuBridge.openSettingsFallback(context, Settings.ACTION_DISPLAY_SETTINGS)
+                      hideNow()
+                      show()
+                  })
+                  row5.addView(circleTile("dnd", false, Color.WHITE) {
+                      hideNow()
+                  })
+                  row5.addView(circleTile("hotspot", hotspotOn, Color.WHITE) {
+                      hotspotOn = !hotspotOn
+                      if (prefs.useShizuku) ShizukuBridge.setHotspot(hotspotOn)
+                      ShizukuBridge.openSettingsFallback(context, "android.settings.TETHER_SETTINGS")
+                  })
+                  col.addView(row5)
+
+                  val row6 = LinearLayout(context).apply {
+                      orientation = LinearLayout.HORIZONTAL
+                      layoutParams = LinearLayout.LayoutParams(
+                          LinearLayout.LayoutParams.MATCH_PARENT,
+                          LinearLayout.LayoutParams.WRAP_CONTENT
+                      ).apply { topMargin = (14 * dp).toInt() }
+                  }
+                  row6.addView(circleTile("shazam", false, Color.WHITE) {
+                      try {
+                          val i = context.packageManager.getLaunchIntentForPackage("com.shazam.android")
+                              ?: Intent(Intent.ACTION_VIEW, Uri.parse("https://www.shazam.com/"))
+                          i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                          context.startActivity(i)
+                      } catch (_: Throwable) {
+                      }
+                  })
+                  row6.addView(circleTile("lock", false, Color.WHITE) {
+                      hideNow()
+                      val svc = CCService.instance
+                      if (svc != null && Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                          svc.performGlobalAction(android.accessibilityservice.AccessibilityService.GLOBAL_ACTION_LOCK_SCREEN)
+                      } else if (prefs.useShizuku) {
+                          ShizukuBridge.runShellCommand("input keyevent 26")
+                      }
+                  })
+                  row6.addView(circleTile("dolby", false, Color.WHITE) {
+                      ShizukuBridge.openSettingsFallback(context, Settings.ACTION_DISPLAY_SETTINGS)
+                  })
+                  row6.addView(circleTile("device_controls", false, Color.WHITE) {
+                      try {
+                          val i = Intent("android.service.controls.action.CONTROLS_PROVIDER_SELECTOR")
+                              .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                          context.startActivity(i)
+                      } catch (_: Throwable) {
+                          ShizukuBridge.openSettingsFallback(context, Settings.ACTION_SETTINGS)
+                      }
+                  })
+                  col.addView(row6)
+
+                  scroll.addView(col)
+                  backdrop.addView(scroll)
+                  return backdrop
+              }
+          }
+          ''', encoding="utf-8")
+          __PY__
+      - name: Apply Samsung top swipe service
+        run: |
+          set -e
+          python3 - <<'__PY__'
+          from pathlib import Path
+
+          Path("app/src/main/java/app/cc/CCService.kt").write_text('''package app.cc
+
+          import android.accessibilityservice.AccessibilityService
+          import android.annotation.SuppressLint
+          import android.graphics.Color
+          import android.graphics.PixelFormat
+          import android.os.Build
+          import android.view.Gravity
+          import android.view.MotionEvent
+          import android.view.View
+          import android.view.WindowManager
+          import android.view.accessibility.AccessibilityEvent
+
+          @SuppressLint("AccessibilityPolicy")
+          class CCService : AccessibilityService() {
+
+              companion object {
+                  var instance: CCService? = null
+              }
+
+              private var panel: Panel? = null
+              private var triggerView: View? = null
+              private var downX = 0f
+              private var downY = 0f
+              private var triggered = false
+
+              override fun onServiceConnected() {
+                  super.onServiceConnected()
+                  instance = this
+                  ShizukuBridge.init(this)
+                  panel = Panel(this)
+                  addTrigger()
+              }
+
+              private fun addTrigger() {
+                  removeTrigger()
+                  val wm = getSystemService(WINDOW_SERVICE) as WindowManager
+                  val dp = resources.displayMetrics.density
+
+                  val v = View(this).apply {
+                      setBackgroundColor(Color.TRANSPARENT)
+                      setOnTouchListener { _, event ->
+                          when (event.actionMasked) {
+                              MotionEvent.ACTION_DOWN -> {
+                                  downX = event.rawX
+                                  downY = event.rawY
+                                  triggered = false
+                                  true
+                              }
+                              MotionEvent.ACTION_MOVE -> {
+                                  if (!triggered) {
+                                      val dy = event.rawY - downY
+                                      val dx = kotlin.math.abs(event.rawX - downX)
+                                      if (dy > 18 * dp && dy > dx) {
+                                          triggered = true
+                                          try {
+                                              performGlobalAction(GLOBAL_ACTION_DISMISS_NOTIFICATION_SHADE)
+                                          } catch (_: Throwable) {
+                                          }
+                                          panel?.show()
+                                          true
+                                      } else {
+                                          false
+                                      }
+                                  } else {
+                                      true
+                                  }
+                              }
+                              MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                                  triggered = false
+                                  false
+                              }
+                              else -> false
+                          }
+                      }
+                  }
+
+                  val type = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                      WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
+                  } else {
+                      @Suppress("DEPRECATION")
+                      WindowManager.LayoutParams.TYPE_PHONE
+                  }
+
+                  val lp = WindowManager.LayoutParams(
+                      (140 * dp).toInt(),
+                      (34 * dp).toInt(),
+                      type,
+                      WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
+                          WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or
+                          WindowManager.LayoutParams.FLAG_WATCH_OUTSIDE_TOUCH,
+                      PixelFormat.TRANSLUCENT
+                  ).apply {
+                      gravity = Gravity.TOP or Gravity.END
+                  }
+
+                  try {
+                      wm.addView(v, lp)
+                      triggerView = v
+                  } catch (_: Throwable) {
+                  }
+              }
+
+              private fun removeTrigger() {
+                  val v = triggerView ?: return
+                  triggerView = null
+                  try {
+                      (getSystemService(WINDOW_SERVICE) as WindowManager).removeView(v)
+                  } catch (_: Throwable) {
+                  }
+              }
+
+              override fun onAccessibilityEvent(event: AccessibilityEvent?) {
+              }
+
+              override fun onInterrupt() {
+              }
+
+              override fun onConfigurationChanged(newConfig: android.content.res.Configuration) {
+                  super.onConfigurationChanged(newConfig)
+                  panel?.hideNow()
+                  addTrigger()
+              }
+
+              override fun onDestroy() {
+                  removeTrigger()
+                  panel?.hideNow()
+                  instance = null
+                  super.onDestroy()
+              }
+          }
+          ''', encoding="utf-8")
+          __PY__
+
 
       - name: Build debug APK
-        run: ./gradlew assembleDebug --no-daemon --stacktrace
 
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4
