@@ -1,0 +1,1157 @@
+name: Build Control Center APK
+on:
+  workflow_dispatch:
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.7'
+      - name: Write project files
+        run: |
+          mkdir -p app
+          cat > app/build.gradle.kts <<'__EOF__'
+          plugins {
+              id("com.android.application")
+              id("org.jetbrains.kotlin.android")
+          }
+
+          android {
+              namespace = "app.cc"
+              compileSdk = 34
+
+              defaultConfig {
+                  applicationId = "app.cc.controlcenter"
+                  minSdk = 29
+                  targetSdk = 34
+                  versionCode = 1
+                  versionName = "0.1"
+              }
+
+              compileOptions {
+                  sourceCompatibility = JavaVersion.VERSION_17
+                  targetCompatibility = JavaVersion.VERSION_17
+              }
+              kotlinOptions {
+                  jvmTarget = "17"
+              }
+          }
+
+          dependencies {
+              implementation("dev.rikka.shizuku:api:13.1.5")
+              implementation("dev.rikka.shizuku:provider:13.1.5")
+          }
+          __EOF__
+          mkdir -p app/src/main
+          cat > app/src/main/AndroidManifest.xml <<'__EOF__'
+          <?xml version="1.0" encoding="utf-8"?>
+          <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+              <uses-permission android:name="moe.shizuku.manager.permission.API_V23" />
+
+              <queries>
+                  <package android:name="moe.shizuku.privileged.api" />
+              </queries>
+
+              <application
+                  android:allowBackup="false"
+                  android:icon="@android:drawable/sym_def_app_icon"
+                  android:label="Control Center"
+                  android:supportsRtl="false"
+                  android:theme="@android:style/Theme.Material.NoActionBar">
+
+                  <activity
+                      android:name=".MainActivity"
+                      android:exported="true">
+                      <intent-filter>
+                          <action android:name="android.intent.action.MAIN" />
+                          <category android:name="android.intent.category.LAUNCHER" />
+                      </intent-filter>
+                  </activity>
+
+                  <service
+                      android:name=".CCService"
+                      android:exported="true"
+                      android:label="Control Center"
+                      android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE">
+                      <intent-filter>
+                          <action android:name="android.accessibilityservice.AccessibilityService" />
+                      </intent-filter>
+                      <meta-data
+                          android:name="android.accessibilityservice"
+                          android:resource="@xml/accessibility_config" />
+                  </service>
+
+                  <provider
+                      android:name="rikka.shizuku.ShizukuProvider"
+                      android:authorities="${applicationId}.shizuku"
+                      android:enabled="true"
+                      android:exported="true"
+                      android:multiprocess="false"
+                      android:permission="android.permission.INTERACT_ACROSS_USERS_FULL" />
+              </application>
+          </manifest>
+          __EOF__
+          mkdir -p app/src/main/java/app/cc
+          cat > app/src/main/java/app/cc/CCService.kt <<'__EOF__'
+          package app.cc
+
+          import android.accessibilityservice.AccessibilityService
+          import android.content.res.Configuration
+          import android.graphics.PixelFormat
+          import android.view.Gravity
+          import android.view.MotionEvent
+          import android.view.View
+          import android.view.WindowManager
+          import android.view.accessibility.AccessibilityEvent
+
+          class CCService : AccessibilityService() {
+
+              companion object {
+                  @Volatile
+                  var instance: CCService? = null
+              }
+
+              var panel: Panel? = null
+              private var trigger: View? = null
+
+              override fun onServiceConnected() {
+                  super.onServiceConnected()
+                  instance = this
+                  panel = Panel(this)
+                  addTrigger()
+              }
+
+              private fun addTrigger() {
+                  removeTrigger()
+                  val wm = getSystemService(WINDOW_SERVICE) as WindowManager
+                  val v = View(this)
+                  var y0 = 0f
+                  var fired = false
+                  val threshold = dpf(36f)
+                  v.setOnTouchListener { _, e ->
+                      when (e.actionMasked) {
+                          MotionEvent.ACTION_DOWN -> {
+                              y0 = e.rawY
+                              fired = false
+                          }
+                          MotionEvent.ACTION_MOVE -> {
+                              if (!fired && e.rawY - y0 > threshold) {
+                                  fired = true
+                                  panel?.show()
+                              }
+                          }
+                      }
+                      true
+                  }
+                  val lp = WindowManager.LayoutParams(
+                      dpi(96f),
+                      maxOf(statusBarH(), dpi(30f)),
+                      WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
+                      WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
+                          WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL or
+                          WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS or
+                          WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
+                      PixelFormat.TRANSLUCENT
+                  )
+                  lp.gravity = Gravity.TOP or Gravity.END
+                  try {
+                      wm.addView(v, lp)
+                      trigger = v
+                  } catch (t: Throwable) {
+                  }
+              }
+
+              private fun removeTrigger() {
+                  val v = trigger ?: return
+                  trigger = null
+                  try {
+                      (getSystemService(WINDOW_SERVICE) as WindowManager).removeView(v)
+                  } catch (t: Throwable) {
+                  }
+              }
+
+              override fun onAccessibilityEvent(e: AccessibilityEvent?) {
+                  if (e?.eventType == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED) panel?.hideIfStale()
+              }
+
+              override fun onInterrupt() {}
+
+              override fun onConfigurationChanged(newConfig: Configuration) {
+                  super.onConfigurationChanged(newConfig)
+                  panel?.hideNow()
+                  addTrigger()
+              }
+
+              override fun onDestroy() {
+                  removeTrigger()
+                  panel?.hideNow()
+                  instance = null
+                  super.onDestroy()
+              }
+          }
+          __EOF__
+          mkdir -p app/src/main/java/app/cc
+          cat > app/src/main/java/app/cc/Ic.kt <<'__EOF__'
+          package app.cc
+
+          import android.graphics.Canvas
+          import android.graphics.Paint
+          import android.graphics.Path
+          import android.graphics.RectF
+
+          /** Own vector-style icons drawn on a 24x24 grid (no Apple assets). */
+          object Ic {
+              const val WIFI = 0
+              const val DATA = 1
+              const val BT = 2
+              const val PLANE = 3
+              const val ROT = 4
+              const val MOON = 5
+              const val TORCH = 6
+              const val SUN = 7
+              const val VOL = 8
+              const val LOCK = 9
+              const val PLAY = 10
+              const val PAUSE = 11
+              const val NEXT = 12
+              const val PREV = 13
+
+              private val fill = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.FILL }
+              private val line = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+                  style = Paint.Style.STROKE
+                  strokeCap = Paint.Cap.ROUND
+                  strokeJoin = Paint.Join.ROUND
+                  strokeWidth = 2f
+              }
+              private val rect = RectF()
+
+              private fun poly(vararg p: Float): Path {
+                  val path = Path()
+                  path.moveTo(p[0], p[1])
+                  var i = 2
+                  while (i < p.size) {
+                      path.lineTo(p[i], p[i + 1])
+                      i += 2
+                  }
+                  path.close()
+                  return path
+              }
+
+              private val moon = Path().apply {
+                  addCircle(12f, 12f, 9f, Path.Direction.CW)
+                  val b = Path()
+                  b.addCircle(17.5f, 7.5f, 7.5f, Path.Direction.CW)
+                  op(b, Path.Op.DIFFERENCE)
+              }
+
+              private val plane = Path().apply {
+                  moveTo(21f, 16f)
+                  lineTo(21f, 14f)
+                  lineTo(13f, 9f)
+                  lineTo(13f, 3.5f)
+                  cubicTo(13f, 2.67f, 12.33f, 2f, 11.5f, 2f)
+                  cubicTo(10.67f, 2f, 10f, 2.67f, 10f, 3.5f)
+                  lineTo(10f, 9f)
+                  lineTo(2f, 14f)
+                  lineTo(2f, 16f)
+                  lineTo(10f, 13.5f)
+                  lineTo(10f, 19f)
+                  lineTo(8f, 20.5f)
+                  lineTo(8f, 22f)
+                  lineTo(11.5f, 21f)
+                  lineTo(15f, 22f)
+                  lineTo(15f, 20.5f)
+                  lineTo(13f, 19f)
+                  lineTo(13f, 13.5f)
+                  lineTo(21f, 16f)
+                  close()
+              }
+
+              private val bt = Path().apply {
+                  moveTo(7f, 8f)
+                  lineTo(17f, 16f)
+                  lineTo(12f, 20f)
+                  lineTo(12f, 4f)
+                  lineTo(17f, 8f)
+                  lineTo(7f, 16f)
+              }
+
+              private val torch = poly(8f, 3f, 16f, 3f, 16f, 8f, 14f, 11f, 14f, 21f, 10f, 21f, 10f, 11f, 8f, 8f)
+              private val speaker = poly(3f, 9f, 7f, 9f, 12f, 5f, 12f, 19f, 7f, 15f, 3f, 15f)
+              private val play = poly(8f, 5f, 19f, 12f, 8f, 19f)
+
+              private fun next(c: Canvas) {
+                  c.drawPath(poly(5f, 6f, 14f, 12f, 5f, 18f), fill)
+                  rect.set(15.5f, 6f, 18.5f, 18f)
+                  c.drawRoundRect(rect, 1f, 1f, fill)
+              }
+
+              fun draw(c: Canvas, kind: Int, size: Float, color: Int) {
+                  val s = size / 24f
+                  c.save()
+                  c.scale(s, s)
+                  fill.color = color
+                  line.color = color
+                  line.strokeWidth = 2f
+                  when (kind) {
+                      WIFI -> {
+                          line.strokeWidth = 2.3f
+                          for (r in floatArrayOf(5f, 9.5f, 14f)) {
+                              rect.set(12f - r, 19f - r, 12f + r, 19f + r)
+                              c.drawArc(rect, 225f, 90f, false, line)
+                          }
+                          c.drawCircle(12f, 19f, 1.8f, fill)
+                      }
+                      DATA -> {
+                          rect.set(4f, 15f, 7.5f, 21f)
+                          c.drawRoundRect(rect, 1.2f, 1.2f, fill)
+                          rect.set(10.2f, 10f, 13.7f, 21f)
+                          c.drawRoundRect(rect, 1.2f, 1.2f, fill)
+                          rect.set(16.5f, 4f, 20f, 21f)
+                          c.drawRoundRect(rect, 1.2f, 1.2f, fill)
+                      }
+                      BT -> c.drawPath(bt, line)
+                      PLANE -> {
+                          c.save()
+                          c.rotate(90f, 12f, 12f)
+                          c.drawPath(plane, fill)
+                          c.restore()
+                      }
+                      ROT -> {
+                          rect.set(3f, 3f, 21f, 21f)
+                          c.drawArc(rect, 140f, 280f, false, line)
+                          rect.set(9f, 11.5f, 15f, 17f)
+                          c.drawRoundRect(rect, 1f, 1f, fill)
+                          line.strokeWidth = 1.6f
+                          rect.set(10f, 7f, 14f, 13f)
+                          c.drawArc(rect, 180f, 180f, false, line)
+                      }
+                      MOON -> c.drawPath(moon, fill)
+                      TORCH -> c.drawPath(torch, fill)
+                      SUN -> {
+                          c.drawCircle(12f, 12f, 4.2f, fill)
+                          for (i in 0 until 8) {
+                              val a = Math.toRadians(i * 45.0)
+                              val x1 = (12 + Math.cos(a) * 7.4).toFloat()
+                              val y1 = (12 + Math.sin(a) * 7.4).toFloat()
+                              val x2 = (12 + Math.cos(a) * 10.0).toFloat()
+                              val y2 = (12 + Math.sin(a) * 10.0).toFloat()
+                              c.drawLine(x1, y1, x2, y2, line)
+                          }
+                      }
+                      VOL -> {
+                          c.drawPath(speaker, fill)
+                          rect.set(7.5f, 7.5f, 16.5f, 16.5f)
+                          c.drawArc(rect, -45f, 90f, false, line)
+                          rect.set(4f, 4f, 20f, 20f)
+                          c.drawArc(rect, -45f, 90f, false, line)
+                      }
+                      LOCK -> {
+                          rect.set(6f, 11f, 18f, 21f)
+                          c.drawRoundRect(rect, 2f, 2f, fill)
+                          line.strokeWidth = 2.2f
+                          rect.set(8f, 3f, 16f, 16f)
+                          c.drawArc(rect, 180f, 180f, false, line)
+                          c.drawLine(8f, 9.5f, 8f, 11f, line)
+                          c.drawLine(16f, 9.5f, 16f, 11f, line)
+                      }
+                      PLAY -> c.drawPath(play, fill)
+                      PAUSE -> {
+                          rect.set(6f, 5f, 10f, 19f)
+                          c.drawRoundRect(rect, 1f, 1f, fill)
+                          rect.set(14f, 5f, 18f, 19f)
+                          c.drawRoundRect(rect, 1f, 1f, fill)
+                      }
+                      NEXT -> next(c)
+                      PREV -> {
+                          c.translate(24f, 0f)
+                          c.scale(-1f, 1f)
+                          next(c)
+                      }
+                  }
+                  c.restore()
+              }
+          }
+          __EOF__
+          mkdir -p app/src/main/java/app/cc
+          cat > app/src/main/java/app/cc/MainActivity.kt <<'__EOF__'
+          package app.cc
+
+          import android.app.Activity
+          import android.content.Intent
+          import android.content.pm.PackageManager
+          import android.os.Bundle
+          import android.provider.Settings
+          import android.view.ViewGroup
+          import android.widget.Button
+          import android.widget.LinearLayout
+          import android.widget.ScrollView
+          import android.widget.TextView
+          import android.widget.Toast
+          import rikka.shizuku.Shizuku
+
+          class MainActivity : Activity() {
+
+              private lateinit var status: TextView
+
+              private val permL = Shizuku.OnRequestPermissionResultListener { _, _ -> runOnUiThread { refresh() } }
+              private val binderL = Shizuku.OnBinderReceivedListener { runOnUiThread { refresh() } }
+
+              private fun toast(s: String) = Toast.makeText(this, s, Toast.LENGTH_LONG).show()
+
+              override fun onCreate(savedInstanceState: Bundle?) {
+                  super.onCreate(savedInstanceState)
+                  val pad = dpi(20f)
+                  val col = LinearLayout(this).apply {
+                      orientation = LinearLayout.VERTICAL
+                      setPadding(pad, pad * 2, pad, pad)
+                  }
+
+                  fun label(s: String, sp: Float): TextView = TextView(this).apply {
+                      text = s
+                      textSize = sp
+                      setPadding(0, dpi(6f), 0, dpi(6f))
+                  }
+
+                  fun button(s: String, action: () -> Unit): Button = Button(this).apply {
+                      text = s
+                      setOnClickListener { action() }
+                  }
+
+                  col.addView(label("Control Center", 26f))
+                  status = label("", 16f)
+                  col.addView(status)
+
+                  col.addView(button("1) فعّل إذن Shizuku") {
+                      try {
+                          if (Shizuku.pingBinder()) Shizuku.requestPermission(100)
+                          else toast("Shizuku مش شغّال — شغّله الأول")
+                      } catch (t: Throwable) {
+                          toast("Shizuku مش شغّال")
+                      }
+                  })
+                  col.addView(button("فتح تطبيق Shizuku") {
+                      val i = packageManager.getLaunchIntentForPackage("moe.shizuku.privileged.api")
+                      if (i != null) startActivity(i) else toast("Shizuku مش متسطّب")
+                  })
+                  col.addView(button("2) فعّل خدمة Accessibility") {
+                      startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
+                  })
+                  col.addView(button("3) جرّب اللوحة الآن") {
+                      val p = CCService.instance?.panel
+                      if (p != null) p.show() else toast("خدمة Accessibility مش شغّالة")
+                  })
+
+                  col.addView(label(
+                      "الاستخدام: اسحب لتحت من الركن العلوي الأيمن للشاشة.\n\n" +
+                          "لو خيار Accessibility رمادي: إعدادات الموبايل > التطبيقات > Control Center > " +
+                          "القائمة (⋮) > السماح بالإعدادات المقيّدة، وبعدها فعّل الخدمة.\n\n" +
+                          "الواي فاي والبلوتوث والداتا ووضع الطيران والتركيز والسطوع محتاجين Shizuku شغّال.",
+                      14f
+                  ))
+
+                  val sv = ScrollView(this)
+                  sv.addView(col, ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
+                  setContentView(sv)
+
+                  try {
+                      Shizuku.addRequestPermissionResultListener(permL)
+                      Shizuku.addBinderReceivedListenerSticky(binderL)
+                  } catch (t: Throwable) {
+                  }
+                  refresh()
+              }
+
+              override fun onResume() {
+                  super.onResume()
+                  refresh()
+              }
+
+              override fun onDestroy() {
+                  try {
+                      Shizuku.removeRequestPermissionResultListener(permL)
+                      Shizuku.removeBinderReceivedListener(binderL)
+                  } catch (t: Throwable) {
+                  }
+                  super.onDestroy()
+              }
+
+              private fun refresh() {
+                  val sh = when {
+                      Sh.ready() -> "✅ Shizuku شغّال ومعاه إذن"
+                      Sh.running() -> "⚠️ Shizuku شغّال بس لسه من غير إذن"
+                      else -> "❌ Shizuku مش شغّال"
+                  }
+                  val acc = if (CCService.instance != null) "✅ خدمة Accessibility شغّالة" else "❌ خدمة Accessibility مش مفعّلة"
+                  status.text = "$sh\n$acc"
+              }
+          }
+          __EOF__
+          mkdir -p app/src/main/java/app/cc
+          cat > app/src/main/java/app/cc/Panel.kt <<'__EOF__'
+          package app.cc
+
+          import android.accessibilityservice.AccessibilityService
+          import android.animation.ValueAnimator
+          import android.content.Context
+          import android.graphics.Color
+          import android.graphics.PixelFormat
+          import android.hardware.camera2.CameraCharacteristics
+          import android.hardware.camera2.CameraManager
+          import android.media.AudioManager
+          import android.os.Build
+          import android.os.Handler
+          import android.os.Looper
+          import android.os.SystemClock
+          import android.provider.Settings
+          import android.view.GestureDetector
+          import android.view.Gravity
+          import android.view.KeyEvent
+          import android.view.MotionEvent
+          import android.view.View
+          import android.view.ViewGroup
+          import android.view.WindowManager
+          import android.view.animation.OvershootInterpolator
+          import android.widget.FrameLayout
+          import android.widget.LinearLayout
+          import android.widget.TextView
+          import android.widget.Toast
+
+          class Panel(private val svc: CCService) {
+
+              private val wm = svc.getSystemService(Context.WINDOW_SERVICE) as WindowManager
+              private val audio = svc.getSystemService(Context.AUDIO_SERVICE) as AudioManager
+              private val cam = svc.getSystemService(Context.CAMERA_SERVICE) as CameraManager
+              private val h = Handler(Looper.getMainLooper())
+
+              private var root: FrameLayout? = null
+              private var content: View? = null
+              private var dim: ValueAnimator? = null
+              var shownAt = 0L
+                  private set
+              private var lastToast = 0L
+              private var lastBr = 0L
+              private var lastVol = 0L
+
+              private var airB: Btn? = null
+              private var dataB: Btn? = null
+              private var wifiB: Btn? = null
+              private var btB: Btn? = null
+              private var rotB: Btn? = null
+              private var dndB: Btn? = null
+              private var torchB: Btn? = null
+              private var briS: VSlider? = null
+              private var volS: VSlider? = null
+              private var playB: IconBtn? = null
+
+              private val camId: String? = try {
+                  cam.cameraIdList.firstOrNull {
+                      cam.getCameraCharacteristics(it).get(CameraCharacteristics.FLASH_INFO_AVAILABLE) == true
+                  }
+              } catch (t: Throwable) {
+                  null
+              }
+
+              private val torchCb = object : CameraManager.TorchCallback() {
+                  override fun onTorchModeChanged(cameraId: String, enabled: Boolean) {
+                      if (cameraId == camId) torchB?.on = enabled
+                  }
+              }
+
+              val showing: Boolean get() = root != null
+
+              // ---------- helpers ----------
+
+              private fun g(name: String): Int = try {
+                  Settings.Global.getInt(svc.contentResolver, name, 0)
+              } catch (t: Throwable) {
+                  0
+              }
+
+              private fun sy(name: String, def: Int): Int = try {
+                  Settings.System.getInt(svc.contentResolver, name, def)
+              } catch (t: Throwable) {
+                  def
+              }
+
+              private fun sh(cmd: String) {
+                  if (Sh.ready()) {
+                      Sh.run(cmd)
+                  } else {
+                      val n = SystemClock.uptimeMillis()
+                      if (n - lastToast > 2500) {
+                          lastToast = n
+                          Toast.makeText(svc, "Shizuku غير متصل أو مفيش إذن — افتح التطبيق وفعّله", Toast.LENGTH_SHORT).show()
+                      }
+                  }
+                  h.postDelayed({ refresh() }, 700)
+                  h.postDelayed({ refresh() }, 1800)
+              }
+
+              private fun key(code: Int) {
+                  val t = SystemClock.uptimeMillis()
+                  audio.dispatchMediaKeyEvent(KeyEvent(t, t, KeyEvent.ACTION_DOWN, code, 0))
+                  audio.dispatchMediaKeyEvent(KeyEvent(t, t, KeyEvent.ACTION_UP, code, 0))
+                  h.postDelayed({ refresh() }, 350)
+              }
+
+              private fun refresh() {
+                  if (root == null) return
+                  wifiB?.on = g("wifi_on") != 0
+                  btB?.on = g("bluetooth_on") != 0
+                  airB?.on = g("airplane_mode_on") != 0
+                  dataB?.on = g("mobile_data") != 0
+                  dndB?.on = g("zen_mode") != 0
+                  rotB?.on = sy("accelerometer_rotation", 1) == 0
+                  val now = SystemClock.uptimeMillis()
+                  if (now - lastBr > 1500) briS?.value = sy("screen_brightness", 128) / 255f
+                  if (now - lastVol > 1500) {
+                      val max = audio.getStreamMaxVolume(AudioManager.STREAM_MUSIC).coerceAtLeast(1)
+                      volS?.value = audio.getStreamVolume(AudioManager.STREAM_MUSIC).toFloat() / max
+                  }
+                  playB?.kind = if (audio.isMusicActive) Ic.PAUSE else Ic.PLAY
+              }
+
+              private fun stopTorch() {
+                  try {
+                      cam.unregisterTorchCallback(torchCb)
+                  } catch (t: Throwable) {
+                  }
+              }
+
+              private fun animDim(r: View, from: Int, to: Int, dur: Long) {
+                  dim?.cancel()
+                  dim = ValueAnimator.ofInt(from, to).apply {
+                      duration = dur
+                      addUpdateListener { r.setBackgroundColor((it.animatedValue as Int) shl 24) }
+                      start()
+                  }
+              }
+
+              private fun remove(r: View) {
+                  try {
+                      wm.removeView(r)
+                  } catch (t: Throwable) {
+                  }
+              }
+
+              // ---------- show / hide ----------
+
+              fun show() {
+                  if (root != null) return
+
+                  val dm = svc.resources.displayMetrics
+                  val gap = svc.dpi(12f)
+                  val sb = svc.statusBarH()
+                  var u = (minOf(dm.widthPixels - svc.dpi(40f), svc.dpi(400f)) - 3 * gap) / 4
+                  val maxByH = (dm.heightPixels - sb - svc.dpi(40f) - 3 * gap) / 4
+                  u = minOf(u, maxByH)
+                  val big = 2 * u + gap
+                  val contentW = 4 * u + 3 * gap
+
+                  val blue = 0xFF0A84FF.toInt()
+                  val green = 0xFF30D158.toInt()
+                  val orange = 0xFFFF9F0A.toInt()
+                  val purple = 0xFF5E5CE6.toInt()
+                  val red = 0xFFFF453A.toInt()
+                  val dark = 0xFF1C1C1E.toInt()
+
+                  // connectivity buttons
+                  val air = Btn(svc, Ic.PLANE, orange, true)
+                  val data = Btn(svc, Ic.DATA, green, true)
+                  val wifi = Btn(svc, Ic.WIFI, blue, true)
+                  val bt = Btn(svc, Ic.BT, blue, true)
+                  airB = air; dataB = data; wifiB = wifi; btB = bt
+
+                  air.onTap = { on ->
+                      sh(if (on) "cmd connectivity airplane-mode enable || settings put global airplane_mode_on 1"
+                      else "cmd connectivity airplane-mode disable || settings put global airplane_mode_on 0")
+                  }
+                  data.onTap = { on -> sh(if (on) "svc data enable" else "svc data disable") }
+                  wifi.onTap = { on -> sh(if (on) "svc wifi enable" else "svc wifi disable") }
+                  bt.onTap = { on ->
+                      sh(if (on) "svc bluetooth enable || cmd bluetooth_manager enable"
+                      else "svc bluetooth disable || cmd bluetooth_manager disable")
+                  }
+
+                  val pad = svc.dpi(10f)
+                  val m = svc.dpi(3f)
+                  val conn = LinearLayout(svc).apply {
+                      orientation = LinearLayout.VERTICAL
+                      background = glass(svc, svc.dpf(34f))
+                      setPadding(pad, pad, pad, pad)
+                      isClickable = true
+                  }
+                  fun cell(v: View, parent: LinearLayout) {
+                      parent.addView(v, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, 1f).apply {
+                          setMargins(m, m, m, m)
+                      })
+                  }
+                  val rowA = LinearLayout(svc).apply { orientation = LinearLayout.HORIZONTAL }
+                  val rowB = LinearLayout(svc).apply { orientation = LinearLayout.HORIZONTAL }
+                  cell(air, rowA); cell(data, rowA)
+                  cell(wifi, rowB); cell(bt, rowB)
+                  conn.addView(rowA, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f))
+                  conn.addView(rowB, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f))
+
+                  // media card
+                  val prev = IconBtn(svc, Ic.PREV)
+                  val play = IconBtn(svc, Ic.PLAY)
+                  val next = IconBtn(svc, Ic.NEXT)
+                  playB = play
+                  prev.tap { key(KeyEvent.KEYCODE_MEDIA_PREVIOUS) }
+                  play.tap { key(KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE) }
+                  next.tap { key(KeyEvent.KEYCODE_MEDIA_NEXT) }
+
+                  val media = LinearLayout(svc).apply {
+                      orientation = LinearLayout.VERTICAL
+                      gravity = Gravity.CENTER
+                      background = glass(svc, svc.dpf(34f))
+                      isClickable = true
+                  }
+                  val label = TextView(svc).apply {
+                      text = "Media"
+                      setTextColor(0xB3FFFFFF.toInt())
+                      textSize = 13f
+                      gravity = Gravity.CENTER
+                  }
+                  media.addView(label, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT))
+                  val ctrl = LinearLayout(svc).apply {
+                      orientation = LinearLayout.HORIZONTAL
+                      gravity = Gravity.CENTER
+                  }
+                  val sz = (big * 0.27f).toInt()
+                  ctrl.addView(prev, LinearLayout.LayoutParams(sz, sz))
+                  ctrl.addView(play, LinearLayout.LayoutParams(sz, sz))
+                  ctrl.addView(next, LinearLayout.LayoutParams(sz, sz))
+                  media.addView(ctrl, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
+                      topMargin = svc.dpi(14f)
+                  })
+
+                  // small tiles
+                  val rot = Btn(svc, Ic.ROT, red, false)
+                  val dnd = Btn(svc, Ic.MOON, purple, false)
+                  val torch = Btn(svc, Ic.TORCH, Color.WHITE, false, dark)
+                  val lock = Btn(svc, Ic.LOCK, Color.WHITE, false, dark, false)
+                  rotB = rot; dndB = dnd; torchB = torch
+
+                  rot.onTap = { on -> sh("settings put system accelerometer_rotation ${if (on) 0 else 1}") }
+                  dnd.onTap = { on -> sh("cmd notification set_dnd ${if (on) "on" else "off"}") }
+                  torch.onTap = { on ->
+                      try {
+                          camId?.let { cam.setTorchMode(it, on) }
+                      } catch (t: Throwable) {
+                      }
+                  }
+                  lock.onTap = { _ ->
+                      hide()
+                      h.postDelayed({ svc.performGlobalAction(AccessibilityService.GLOBAL_ACTION_LOCK_SCREEN) }, 250)
+                  }
+
+                  val tiles = LinearLayout(svc).apply { orientation = LinearLayout.VERTICAL }
+                  val t1 = LinearLayout(svc).apply { orientation = LinearLayout.HORIZONTAL }
+                  val t2 = LinearLayout(svc).apply { orientation = LinearLayout.HORIZONTAL }
+                  t1.addView(rot, LinearLayout.LayoutParams(u, u))
+                  t1.addView(dnd, LinearLayout.LayoutParams(u, u).apply { leftMargin = gap })
+                  t2.addView(torch, LinearLayout.LayoutParams(u, u))
+                  t2.addView(lock, LinearLayout.LayoutParams(u, u).apply { leftMargin = gap })
+                  tiles.addView(t1, LinearLayout.LayoutParams(big, u))
+                  tiles.addView(t2, LinearLayout.LayoutParams(big, u).apply { topMargin = gap })
+
+                  // sliders
+                  val bri = VSlider(svc, Ic.SUN)
+                  val vol = VSlider(svc, Ic.VOL)
+                  briS = bri; volS = vol
+                  bri.onChange = { v, fin ->
+                      val now = SystemClock.uptimeMillis()
+                      lastBr = now
+                      if (fin || now - lastBriCmd > 140) {
+                          lastBriCmd = now
+                          val n = (1 + v * 254).toInt().coerceIn(1, 255)
+                          sh("settings put system screen_brightness $n")
+                      }
+                  }
+                  vol.onChange = { v, _ ->
+                      lastVol = SystemClock.uptimeMillis()
+                      val max = audio.getStreamMaxVolume(AudioManager.STREAM_MUSIC)
+                      audio.setStreamVolume(AudioManager.STREAM_MUSIC, Math.round(v * max), 0)
+                  }
+
+                  // assemble
+                  val row1 = LinearLayout(svc).apply { orientation = LinearLayout.HORIZONTAL }
+                  row1.addView(conn, LinearLayout.LayoutParams(big, big))
+                  row1.addView(media, LinearLayout.LayoutParams(big, big).apply { leftMargin = gap })
+
+                  val row2 = LinearLayout(svc).apply { orientation = LinearLayout.HORIZONTAL }
+                  row2.addView(tiles, LinearLayout.LayoutParams(big, big))
+                  row2.addView(bri, LinearLayout.LayoutParams(u, big).apply { leftMargin = gap })
+                  row2.addView(vol, LinearLayout.LayoutParams(u, big).apply { leftMargin = gap })
+
+                  val box = LinearLayout(svc).apply {
+                      orientation = LinearLayout.VERTICAL
+                      isClickable = true
+                  }
+                  box.addView(row1, LinearLayout.LayoutParams(contentW, big))
+                  box.addView(row2, LinearLayout.LayoutParams(contentW, big).apply { topMargin = gap })
+
+                  val r = FrameLayout(svc)
+                  r.addView(box, FrameLayout.LayoutParams(
+                      ViewGroup.LayoutParams.WRAP_CONTENT,
+                      ViewGroup.LayoutParams.WRAP_CONTENT,
+                      Gravity.TOP or Gravity.CENTER_HORIZONTAL
+                  ).apply { topMargin = sb + svc.dpi(14f) })
+                  r.setOnClickListener { hide() }
+                  val gd = GestureDetector(svc, object : GestureDetector.SimpleOnGestureListener() {
+                      override fun onFling(e1: MotionEvent?, e2: MotionEvent, vx: Float, vy: Float): Boolean {
+                          if (vy < -1200f) {
+                              hide()
+                              return true
+                          }
+                          return false
+                      }
+                  })
+                  r.setOnTouchListener { _, e ->
+                      gd.onTouchEvent(e)
+                      false
+                  }
+
+                  val lp = WindowManager.LayoutParams(
+                      ViewGroup.LayoutParams.MATCH_PARENT,
+                      ViewGroup.LayoutParams.MATCH_PARENT,
+                      WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
+                      WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or
+                          WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS or
+                          WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
+                          WindowManager.LayoutParams.FLAG_HARDWARE_ACCELERATED,
+                      PixelFormat.TRANSLUCENT
+                  )
+                  lp.layoutInDisplayCutoutMode = WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES
+                  if (Build.VERSION.SDK_INT >= 31) {
+                      lp.flags = lp.flags or WindowManager.LayoutParams.FLAG_BLUR_BEHIND
+                      lp.blurBehindRadius = 80
+                  }
+
+                  try {
+                      wm.addView(r, lp)
+                  } catch (t: Throwable) {
+                      return
+                  }
+                  root = r
+                  content = box
+                  shownAt = SystemClock.uptimeMillis()
+
+                  try {
+                      cam.registerTorchCallback(torchCb, h)
+                  } catch (t: Throwable) {
+                  }
+                  refresh()
+
+                  box.alpha = 0f
+                  box.scaleX = 0.92f
+                  box.scaleY = 0.92f
+                  box.translationY = -svc.dpf(24f)
+                  animDim(r, 0, 0x66, 260)
+                  box.post {
+                      box.pivotX = box.width * 0.85f
+                      box.pivotY = 0f
+                      box.animate().alpha(1f).scaleX(1f).scaleY(1f).translationY(0f)
+                          .setDuration(380).setInterpolator(OvershootInterpolator(0.8f)).start()
+                  }
+              }
+
+              private var lastBriCmd = 0L
+
+              fun hide() {
+                  val r = root ?: return
+                  root = null
+                  stopTorch()
+                  animDim(r, 0x66, 0, 180)
+                  val c = content
+                  if (c != null) {
+                      c.animate().alpha(0f).scaleX(0.95f).scaleY(0.95f).translationY(-svc.dpf(14f))
+                          .setDuration(170).withEndAction { remove(r) }.start()
+                  } else {
+                      remove(r)
+                  }
+              }
+
+              fun hideNow() {
+                  val r = root ?: return
+                  root = null
+                  stopTorch()
+                  dim?.cancel()
+                  content?.animate()?.cancel()
+                  remove(r)
+              }
+
+              fun hideIfStale() {
+                  if (root != null && SystemClock.uptimeMillis() - shownAt > 900) hide()
+              }
+          }
+          __EOF__
+          mkdir -p app/src/main/java/app/cc
+          cat > app/src/main/java/app/cc/Sh.kt <<'__EOF__'
+          package app.cc
+
+          import android.content.pm.PackageManager
+          import android.util.Log
+          import rikka.shizuku.Shizuku
+
+          /** Runs shell commands (uid 2000) through Shizuku. */
+          object Sh {
+              fun running(): Boolean = try {
+                  Shizuku.pingBinder()
+              } catch (t: Throwable) {
+                  false
+              }
+
+              fun ready(): Boolean = try {
+                  Shizuku.pingBinder() && Shizuku.checkSelfPermission() == PackageManager.PERMISSION_GRANTED
+              } catch (t: Throwable) {
+                  false
+              }
+
+              fun run(cmd: String) {
+                  Thread {
+                      try {
+                          // Shizuku.newProcess is private since API 13; reflection is the usual workaround.
+                          val m = Shizuku::class.java.getDeclaredMethod(
+                              "newProcess",
+                              Array<String>::class.java,
+                              Array<String>::class.java,
+                              String::class.java
+                          )
+                          m.isAccessible = true
+                          val p = m.invoke(null, arrayOf("sh", "-c", cmd), null, null) as Process
+                          p.waitFor()
+                      } catch (t: Throwable) {
+                          Log.e("CC", "shell failed: $cmd", t)
+                      }
+                  }.start()
+              }
+          }
+          __EOF__
+          mkdir -p app/src/main/java/app/cc
+          cat > app/src/main/java/app/cc/Widgets.kt <<'__EOF__'
+          package app.cc
+
+          import android.content.Context
+          import android.graphics.Canvas
+          import android.graphics.Color
+          import android.graphics.Paint
+          import android.graphics.Path
+          import android.graphics.RectF
+          import android.graphics.drawable.GradientDrawable
+          import android.view.MotionEvent
+          import android.view.View
+          import android.view.animation.OvershootInterpolator
+
+          fun Context.dpf(v: Float): Float = v * resources.displayMetrics.density
+          fun Context.dpi(v: Float): Int = (v * resources.displayMetrics.density + 0.5f).toInt()
+
+          fun Context.statusBarH(): Int {
+              val id = resources.getIdentifier("status_bar_height", "dimen", "android")
+              return if (id > 0) resources.getDimensionPixelSize(id) else dpi(28f)
+          }
+
+          /** Frosted-glass card background (the blur itself comes from the window). */
+          fun glass(ctx: Context, radius: Float): GradientDrawable = GradientDrawable().apply {
+              cornerRadius = radius
+              setColor(0x38FFFFFF)
+              setStroke(ctx.dpi(1f), 0x59FFFFFF)
+          }
+
+          fun View.bump() {
+              animate().cancel()
+              animate().scaleX(0.92f).scaleY(0.92f).setDuration(80).withEndAction {
+                  animate().scaleX(1f).scaleY(1f).setDuration(260)
+                      .setInterpolator(OvershootInterpolator(3f)).start()
+              }.start()
+          }
+
+          /** Round (connectivity) or rounded-square (tile) toggle button. */
+          class Btn(
+              ctx: Context,
+              private val kind: Int,
+              private val onColor: Int,
+              private val round: Boolean,
+              private val onIcon: Int = Color.WHITE,
+              private val toggle: Boolean = true
+          ) : View(ctx) {
+
+              var on = false
+                  set(v) {
+                      field = v
+                      invalidate()
+                  }
+
+              var onTap: ((Boolean) -> Unit)? = null
+              private val p = Paint(Paint.ANTI_ALIAS_FLAG)
+
+              init {
+                  isClickable = true
+                  setOnClickListener {
+                      if (toggle) on = !on
+                      bump()
+                      onTap?.invoke(if (toggle) on else true)
+                  }
+              }
+
+              override fun onDraw(c: Canvas) {
+                  val w = width.toFloat()
+                  val h = height.toFloat()
+                  val d = minOf(w, h)
+                  p.color = if (on) onColor else 0x4DFFFFFF
+                  if (round) {
+                      c.drawCircle(w / 2f, h / 2f, d / 2f, p)
+                  } else {
+                      c.drawRoundRect(0f, 0f, w, h, d * 0.3f, d * 0.3f, p)
+                  }
+                  val sz = d * 0.5f
+                  c.save()
+                  c.translate((w - sz) / 2f, (h - sz) / 2f)
+                  Ic.draw(c, kind, sz, if (on) onIcon else Color.WHITE)
+                  c.restore()
+              }
+          }
+
+          /** Transparent icon-only button (media controls). */
+          class IconBtn(ctx: Context, kind0: Int) : View(ctx) {
+              var kind: Int = kind0
+                  set(v) {
+                      field = v
+                      invalidate()
+                  }
+
+              init {
+                  isClickable = true
+              }
+
+              fun tap(a: () -> Unit) {
+                  setOnClickListener {
+                      bump()
+                      a()
+                  }
+              }
+
+              override fun onDraw(c: Canvas) {
+                  val sz = minOf(width, height) * 0.6f
+                  c.save()
+                  c.translate((width - sz) / 2f, (height - sz) / 2f)
+                  Ic.draw(c, kind, sz, Color.WHITE)
+                  c.restore()
+              }
+          }
+
+          /** iOS-style vertical pill slider. */
+          class VSlider(ctx: Context, private val kind: Int) : View(ctx) {
+              var value = 0.5f
+                  set(v) {
+                      field = v.coerceIn(0f, 1f)
+                      invalidate()
+                  }
+
+              /** (value, isFinal) */
+              var onChange: ((Float, Boolean) -> Unit)? = null
+
+              private val track = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = 0x40FFFFFF }
+              private val fillP = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = 0xF2FFFFFF.toInt() }
+              private val clip = Path()
+              private val box = RectF()
+
+              override fun onDraw(c: Canvas) {
+                  val w = width.toFloat()
+                  val h = height.toFloat()
+                  val r = w * 0.36f
+                  box.set(0f, 0f, w, h)
+                  c.drawRoundRect(box, r, r, track)
+                  c.save()
+                  clip.reset()
+                  clip.addRoundRect(box, r, r, Path.Direction.CW)
+                  c.clipPath(clip)
+                  c.drawRect(0f, h * (1f - value), w, h, fillP)
+                  c.restore()
+                  val sz = w * 0.42f
+                  val color = if (value > 0.14f) 0xFF77777D.toInt() else 0xE6FFFFFF.toInt()
+                  c.save()
+                  c.translate((w - sz) / 2f, h - sz - w * 0.22f)
+                  Ic.draw(c, kind, sz, color)
+                  c.restore()
+              }
+
+              override fun onTouchEvent(e: MotionEvent): Boolean {
+                  parent?.requestDisallowInterceptTouchEvent(true)
+                  when (e.actionMasked) {
+                      MotionEvent.ACTION_DOWN, MotionEvent.ACTION_MOVE -> {
+                          value = 1f - e.y / height
+                          onChange?.invoke(value, false)
+                      }
+                      MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                          value = 1f - e.y / height
+                          onChange?.invoke(value, true)
+                      }
+                  }
+                  return true
+              }
+          }
+          __EOF__
+          mkdir -p app/src/main/res/values
+          cat > app/src/main/res/values/strings.xml <<'__EOF__'
+          <?xml version="1.0" encoding="utf-8"?>
+          <resources>
+              <string name="svc_desc">Draws the Control Center panel over other apps when you swipe down from the top-right corner.</string>
+          </resources>
+          __EOF__
+          mkdir -p app/src/main/res/xml
+          cat > app/src/main/res/xml/accessibility_config.xml <<'__EOF__'
+          <?xml version="1.0" encoding="utf-8"?>
+          <accessibility-service xmlns:android="http://schemas.android.com/apk/res/android"
+              android:accessibilityEventTypes="typeWindowStateChanged"
+              android:accessibilityFeedbackType="feedbackGeneric"
+              android:accessibilityFlags="flagDefault"
+              android:canRetrieveWindowContent="false"
+              android:description="@string/svc_desc"
+              android:notificationTimeout="100"
+              android:settingsActivity="app.cc.MainActivity" />
+          __EOF__
+          cat > build.gradle.kts <<'__EOF__'
+          plugins {
+              id("com.android.application") version "8.5.2" apply false
+              id("org.jetbrains.kotlin.android") version "1.9.24" apply false
+          }
+          __EOF__
+          cat > gradle.properties <<'__EOF__'
+          org.gradle.jvmargs=-Xmx2g
+          android.useAndroidX=true
+          android.nonTransitiveRClass=true
+          kotlin.code.style=official
+          __EOF__
+          cat > settings.gradle.kts <<'__EOF__'
+          pluginManagement {
+              repositories {
+                  google()
+                  mavenCentral()
+                  gradlePluginPortal()
+              }
+          }
+          dependencyResolutionManagement {
+              repositories {
+                  google()
+                  mavenCentral()
+              }
+          }
+          rootProject.name = "ControlCenter"
+          include(":app")
+          __EOF__
+      - name: Build debug APK
+        run: gradle assembleDebug --no-daemon --stacktrace
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ControlCenter-debug-apk
+          path: app/build/outputs/apk/debug/*.apk
