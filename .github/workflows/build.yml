@@ -28,10 +28,28 @@ jobs:
 
       - name: Create project files
         run: |
+          set -e
           mkdir -p .github/workflows
+          mkdir -p gradle/wrapper
           mkdir -p app/src/main/java/app/cc
           mkdir -p app/src/main/res/values
           mkdir -p app/src/main/res/xml
+
+          cat > gradle/wrapper/gradle-wrapper.properties <<'__EOF__'
+          distributionBase=GRADLE_USER_HOME
+          distributionPath=wrapper/dists
+          distributionUrl=https\://services.gradle.org/distributions/gradle-8.7-bin.zip
+          networkTimeout=10000
+          validateDistributionUrl=true
+          zipStoreBase=GRADLE_USER_HOME
+          zipStorePath=wrapper/dists
+          __EOF__
+
+          cat > gradlew <<'__EOF__'
+          #!/usr/bin/env sh
+          exec gradle "$@"
+          __EOF__
+          chmod +x gradlew
 
           cat > build.gradle.kts <<'__EOF__'
           plugins {
@@ -334,14 +352,12 @@ jobs:
 
               fun setWifiEnabled(enable: Boolean): Boolean {
                   val arg = if (enable) "enable" else "disable"
-                  val r = runShellCommand("svc wifi $arg")
-                  return r.first
+                  return runShellCommand("svc wifi $arg").first
               }
 
               fun setMobileDataEnabled(enable: Boolean): Boolean {
                   val arg = if (enable) "enable" else "disable"
-                  val r = runShellCommand("svc data $arg")
-                  return r.first
+                  return runShellCommand("svc data $arg").first
               }
 
               fun setBluetoothEnabled(enable: Boolean): Boolean {
@@ -373,7 +389,6 @@ jobs:
               }
 
               fun setZenMode(zenMode: Int): Boolean {
-                  // 0 = off, 1 = important only, 2 = total silence, 3 = alarms only
                   val r1 = runShellCommand("cmd notification set_zen_mode $zenMode").first
                   val r2 = runShellCommand("settings put global zen_mode $zenMode").first
                   return r1 || r2
@@ -558,7 +573,7 @@ jobs:
           }
           __EOF__
 
-          cat > app/src/main/java/app/cc/Widgets.kt <<'__EOF__'
+                    cat > app/src/main/java/app/cc/Widgets.kt <<'__EOF__'
           package app.cc
 
           import android.content.Context
@@ -606,22 +621,18 @@ jobs:
                   }
               }
 
-              fun textColor(active: Boolean, light: Boolean): Int {
-                  return when {
-                      light && active -> Color.parseColor("#0F172A")
-                      light && !active -> Color.parseColor("#1E293B")
-                      !light && active -> Color.WHITE
-                      else -> Color.parseColor("#DCE6F2")
-                  }
+              fun textColor(active: Boolean, light: Boolean): Int = when {
+                  light && active -> Color.parseColor("#0F172A")
+                  light && !active -> Color.parseColor("#1E293B")
+                  !light && active -> Color.WHITE
+                  else -> Color.parseColor("#DCE6F2")
               }
 
-              fun iconTint(active: Boolean, light: Boolean): Int {
-                  return when {
-                      light && active -> Color.WHITE
-                      light && !active -> Color.parseColor("#0F172A")
-                      !light && active -> Color.parseColor("#0B1020")
-                      else -> Color.WHITE
-                  }
+              fun iconTint(active: Boolean, light: Boolean): Int = when {
+                  light && active -> Color.WHITE
+                  light && !active -> Color.parseColor("#0F172A")
+                  !light && active -> Color.parseColor("#0B1020")
+                  else -> Color.WHITE
               }
           }
 
@@ -659,7 +670,6 @@ jobs:
               var light: Boolean
           ) : LinearLayout(context) {
 
-              private val iconView = LiquidIconView(context, iconKind(key), active, light)
               private val labelView = TextView(context).apply {
                   text = title
                   textSize = 12.5f
@@ -674,13 +684,7 @@ jobs:
                   val py = (10 * resources.displayMetrics.density).toInt()
                   setPadding(px, py, px, py)
                   background = GlassStyle.cardBackground(active, light)
-
-                  addView(iconView)
-                  val sp = View(context).apply {
-                      layoutParams = LayoutParams((8 * resources.displayMetrics.density).toInt(), 1)
-                  }
-                  addView(sp)
-                  addView(labelView)
+                  rebuildChildren()
               }
 
               fun refreshState(newActive: Boolean, newLight: Boolean) {
@@ -688,23 +692,21 @@ jobs:
                   light = newLight
                   background = GlassStyle.cardBackground(active, light)
                   labelView.setTextColor(GlassStyle.textColor(active, light))
+                  rebuildChildren()
+              }
+
+              private fun rebuildChildren() {
                   removeAllViews()
-                  val freshIcon = LiquidIconView(context, iconKind(key), active, light)
-                  addView(freshIcon)
-                  val sp = View(context).apply {
+                  addView(LiquidIconView(context, iconKind(key), active, light))
+                  addView(View(context).apply {
                       layoutParams = LayoutParams((8 * resources.displayMetrics.density).toInt(), 1)
-                  }
-                  addView(sp)
+                  })
                   addView(labelView)
               }
 
               companion object {
                   fun iconKind(key: String): String = when {
                       key.startsWith("custom::") -> "shortcut"
-                      key == "vibrate" -> "vibrate"
-                      key == "silent" -> "silent"
-                      key == "rotation" -> "rotation"
-                      key == "dark_mode" -> "dark_mode"
                       key == "device_controls" -> "controls"
                       else -> key
                   }
@@ -782,7 +784,6 @@ jobs:
               }
           }
           __EOF__
-
           cat > app/src/main/java/app/cc/Panel.kt <<'__EOF__'
           package app.cc
 
@@ -797,6 +798,7 @@ jobs:
           import android.os.Build
           import android.provider.Settings
           import android.view.Gravity
+          import android.view.KeyEvent
           import android.view.View
           import android.view.WindowManager
           import android.widget.Button
@@ -881,7 +883,7 @@ jobs:
                   }
 
                   val shell = LinearLayout(context).apply {
-                      orientation = VERTICAL_OR_HORIZ
+                      orientation = LinearLayout.VERTICAL
                       setPadding((14 * dp).toInt(), (14 * dp).toInt(), (14 * dp).toInt(), (14 * dp).toInt())
                       background = GradientDrawable().apply {
                           shape = GradientDrawable.RECTANGLE
@@ -922,7 +924,6 @@ jobs:
                   header.addView(btnClose)
                   shell.addView(header)
 
-                  // Sliders + Media card row
                   val topRow = LinearLayout(context).apply {
                       orientation = LinearLayout.HORIZONTAL
                       val lp = LinearLayout.LayoutParams(
@@ -961,16 +962,16 @@ jobs:
                   val am = context.getSystemService(Context.AUDIO_SERVICE) as AudioManager
 
                   val btnPrev = Button(context).apply {
-                      text = "⏮"
-                      setOnClickListener { sendMediaKey(am, android.view.KeyEvent.KEYCODE_MEDIA_PREVIOUS) }
+                      text = "Prev"
+                      setOnClickListener { sendMediaKey(am, KeyEvent.KEYCODE_MEDIA_PREVIOUS) }
                   }
                   val btnPlay = Button(context).apply {
-                      text = "⏯"
-                      setOnClickListener { sendMediaKey(am, android.view.KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE) }
+                      text = "Play"
+                      setOnClickListener { sendMediaKey(am, KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE) }
                   }
                   val btnNext = Button(context).apply {
-                      text = "⏭"
-                      setOnClickListener { sendMediaKey(am, android.view.KeyEvent.KEYCODE_MEDIA_NEXT) }
+                      text = "Next"
+                      setOnClickListener { sendMediaKey(am, KeyEvent.KEYCODE_MEDIA_NEXT) }
                   }
 
                   mediaControls.addView(btnPrev)
@@ -1009,7 +1010,6 @@ jobs:
                   topRow.addView(volSlider)
                   shell.addView(topRow)
 
-                  // Quick tiles grid
                   val scroll = ScrollView(context).apply {
                       layoutParams = LinearLayout.LayoutParams(
                           LinearLayout.LayoutParams.MATCH_PARENT,
@@ -1049,12 +1049,10 @@ jobs:
                   return root
               }
 
-              private val VERTICAL_OR_HORIZ = LinearLayout.VERTICAL
-
               private fun sendMediaKey(am: AudioManager, keyCode: Int) {
                   try {
-                      am.dispatchMediaKeyEvent(android.view.KeyEvent(android.view.KeyEvent.ACTION_DOWN, keyCode))
-                      am.dispatchMediaKeyEvent(android.view.KeyEvent(android.view.KeyEvent.ACTION_UP, keyCode))
+                      am.dispatchMediaKeyEvent(KeyEvent(KeyEvent.ACTION_DOWN, keyCode))
+                      am.dispatchMediaKeyEvent(KeyEvent(KeyEvent.ACTION_UP, keyCode))
                   } catch (_: Throwable) {
                   }
               }
@@ -1092,9 +1090,7 @@ jobs:
               private fun handleTileClick(key: String, currentActive: Boolean, am: AudioManager): Boolean {
                   val target = !currentActive
                   return when (key) {
-                      "torch" -> {
-                          toggleTorch(target)
-                      }
+                      "torch" -> toggleTorch(target)
                       "silent" -> {
                           if (prefs.useShizuku) ShizukuBridge.setRingerMode(context, AudioManager.RINGER_MODE_SILENT)
                           else am.ringerMode = AudioManager.RINGER_MODE_SILENT
@@ -1255,7 +1251,6 @@ jobs:
               }
           }
           __EOF__
-
           cat > app/src/main/java/app/cc/CCService.kt <<'__EOF__'
           package app.cc
 
@@ -1373,7 +1368,6 @@ jobs:
               }
           }
           __EOF__
-
           cat > app/src/main/java/app/cc/MainActivity.kt <<'__EOF__'
           package app.cc
 
@@ -1435,7 +1429,7 @@ jobs:
                       setPadding(0, (2 * dp).toInt(), 0, (6 * dp).toInt())
                   }
 
-                  root.addView(sectionTitle("Control Center — Liquid Glass"))
+                  root.addView(sectionTitle("Control Center - Liquid Glass"))
                   root.addView(
                       bodyText(
                           "1) فعّل الظهور فوق التطبيقات الأخرى.\n" +
@@ -1446,7 +1440,7 @@ jobs:
 
                   val overlayOk = Settings.canDrawOverlays(this)
                   root.addView(Button(this).apply {
-                      text = if (overlayOk) "الظهور فوق التطبيقات: مفعّل ✓" else "تفعيل الظهور فوق التطبيقات"
+                      text = if (overlayOk) "الظهور فوق التطبيقات: مفعّل" else "تفعيل الظهور فوق التطبيقات"
                       setOnClickListener {
                           val i = Intent(
                               Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
