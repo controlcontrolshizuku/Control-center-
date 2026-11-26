@@ -25,6 +25,8 @@ jobs:
 
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.7'
 
       - name: Create project files
         run: |
@@ -573,7 +575,7 @@ jobs:
           }
           __EOF__
 
-                    cat > app/src/main/java/app/cc/Widgets.kt <<'__EOF__'
+          cat > app/src/main/java/app/cc/Widgets.kt <<'__EOF__'
           package app.cc
 
           import android.content.Context
@@ -1781,13 +1783,13 @@ jobs:
           }
           ''', encoding="utf-8")
           __PY__
-           - name: Apply Liquid Glass Panel UI
-                  run: |
-              set -e
-              python3 - <<'__PY__'
-              from pathlib import Path
+      - name: Apply Liquid Glass Panel UI
+        run: |
+          set -e
+          python3 - <<'__PY__'
+          from pathlib import Path
 
-              Path("app/src/main/java/app/cc/Panel.kt").write_text('''package app.cc
+          Path("app/src/main/java/app/cc/Panel.kt").write_text('''package app.cc
 
           import android.content.Context
           import android.content.Intent
@@ -2565,15 +2567,12 @@ jobs:
           }
           ''', encoding="utf-8")
           __PY__
-          
-          - name: Build debug APK
-      
-          run: ./gradlew assembleDebug --no-daemon --stacktrace
+
+      - name: Build debug APK
+        run: ./gradlew assembleDebug --no-daemon --stacktrace
 
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4
         with:
           name: ControlCenter-debug-apk
           path: app/build/outputs/apk/debug/*.apk
-
-
